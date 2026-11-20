@@ -4,7 +4,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 const arg = process.argv.find((a) => a.startsWith("--passiv-origin="));
 const ours = !!arg && location.origin === arg.slice("--passiv-origin=".length) && window.top === window;
-const IN = ["overlay:state", "overlay:buddy", "overlay:todos", "overlay:notes", "overlay:reset"];
+const IN = ["overlay:state", "overlay:buddy", "overlay:todos", "overlay:notes", "overlay:reset", "overlay:update"];
 
 if (ours) {
   contextBridge.exposeInMainWorld("layer", {

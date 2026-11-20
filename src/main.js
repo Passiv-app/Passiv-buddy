@@ -35,7 +35,9 @@ const okHost = (u) => { try { const x = new URL(u); return (x.protocol === "http
 // The only things we ever hand to the operating system to open: web pages and mail links. Never files, never other programs.
 const openSafe = (u) => { try { const x = new URL(String(u)); if (x.protocol === "https:" || x.protocol === "mailto:") { shell.openExternal(x.toString()); return true; } } catch { /* not a link */ } return false; };
 // Messages only count when they come from Passiv's own page, in its main frame, not from anything else that got loaded.
-const trusted = (e, origin = APP_ORIGIN) => { try { const f = e.senderFrame; return !!f && f === e.sender.mainFrame && new URL(f.url).origin === origin; } catch { return false; } };
+// A page's origin, as an address. (A made-up scheme like passiv-ui:// has an "opaque" origin that reads as "null", so build it by hand.)
+const originOf = (u) => { const x = new URL(u); return x.protocol === `${UI_SCHEME}:` ? `${UI_SCHEME}://${x.host}` : x.origin; };
+const trusted = (e, origin = APP_ORIGIN) => { try { const f = e.senderFrame; return !!f && f === e.sender.mainFrame && originOf(f.url) === origin; } catch { return false; } };
 const clip = (v, n) => (typeof v === "string" ? v.slice(0, n) : "");
 app.enableSandbox();
 const SIGN_IN = /^\/(login|register|mfa|forgot-password|reset-password|alpha|setup|legal)/;
@@ -218,6 +220,7 @@ function createOverlay(display) {
   win.webContents.on("did-finish-load", () => {
     if (authed && cache.state) win.webContents.send("overlay:state", withOpen(cache.state));
     win.webContents.send("overlay:buddy", buddyPayload());
+    if (update) win.webContents.send("overlay:update", updatePayload());
     if (authed) win.webContents.send("overlay:todos", cache.todos);
     win.showInactive();
   });
@@ -229,6 +232,7 @@ function rebuildOverlays() {
   overlays.clear();
   for (const d of screen.getAllDisplays()) createOverlay(d);
 }
+const updatePayload = () => (update ? { latest: update.latest, notes: update.notes } : null);
 const toOverlays = (channel, data) => { for (const w of overlays.values()) if (!w.isDestroyed()) w.webContents.send(channel, data); };
 
 // Windows lets other always-on-top windows (and the taskbar) sneak in front now and then, so the layer re-asserts itself.
@@ -335,6 +339,8 @@ function hookKeys() {
 
 function startKeys() {
   hookKeys();
+  // Mac: the moment Accessibility is switched on, start hearing the held keys (no restart needed).
+  const retry = setInterval(() => { if (hooked) clearInterval(retry); else hookKeys(); }, 3000);
   // Always there, and they work before Mac's Accessibility switch too:
   //   Control+Alt+Space  the typing box, in the middle of the screen
   //   Control+Alt+T      tap once to talk, tap again to send (holding Control+Alt works too)
@@ -366,11 +372,12 @@ async function checkForUpdate() {
     if (!res.ok) return;
     const v = await res.json();
     const mine = app.getVersion();
-    if (!v?.latest || !older(mine, v.latest)) { update = null; buildTrayMenu(); return; }
+    if (!v?.latest || !older(mine, v.latest)) { update = null; buildTrayMenu(); toOverlays("overlay:update", null); return; }
     const fresh = !update || update.latest !== v.latest;
     update = { latest: clip(String(v.latest), 20), url: myDownload(v.downloads), sha256: mySum(v.sha256), notes: clip(String(v.notes || ""), 200), required: !!v.minimum && older(mine, v.minimum) };
     buildTrayMenu();
     toPanel({ type: "update", latest: update.latest, url: update.url, notes: update.notes, required: update.required });
+    toOverlays("overlay:update", updatePayload());
     if (fresh && Notification.isSupported()) {
       const n = new Notification({ title: "A new Passiv buddy is ready", body: update.notes || `Version ${update.latest}. Click to install it.`, silent: true });
       n.on("click", installUpdate);
@@ -578,6 +585,8 @@ ipcMain.handle("desktop:invoke", async (e, name, arg) => {
     case "setLogin": setLogin(!!arg); buildTrayMenu(); return true;
     case "retryKeys": return hookKeys();
     case "installUpdate": installUpdate(); return true;
+    // Mac only notices a new Accessibility permission after a restart.
+    case "relaunch": quitting = true; app.relaunch(); app.exit(0); return true;
     case "authed": return authed;
     default: return null;
   }
@@ -601,6 +610,8 @@ ipcMain.on("overlay:command", (e, cmd) => {
   if (cmd.type === "todo" && typeof cmd.id === "string" && ["done", "dismiss", "undo-done", "undo-dismiss"].includes(cmd.action)) toPanel({ type: "todo", id: cmd.id, action: cmd.action });
   else if (cmd.type === "open") showPanel(cmd.tab === "todos" ? "todos" : undefined);
   else if (cmd.type === "talk") toggleTalk();
+  else if (cmd.type === "ask") openAsk();
+  else if (cmd.type === "installUpdate") installUpdate();
   else if (cmd.type === "hide") setBuddyOn(false);
   else if (cmd.type === "note" && typeof cmd.id === "string" && /^[\w-]{1,60}$/.test(cmd.id) && typeof cmd.action === "string" && /^[\w-]{1,40}$/.test(cmd.action)) toPanel({ type: "note", id: cmd.id, action: cmd.action });
   else if (cmd.type === "person" && typeof cmd.id === "string" && /^[\w-]{1,60}$/.test(cmd.id)) openSafe(`${APP_URL}/r/${cmd.id}`);

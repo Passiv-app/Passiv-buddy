@@ -5,7 +5,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 const arg = process.argv.find((a) => a.startsWith("--passiv-origin="));
 const ours = !!arg && location.origin === arg.slice("--passiv-origin=".length) && window.top === window;
 const OUT = new Set(["state", "buddy", "todos", "notes", "show", "hide", "ready", "onboarded"]);
-const ASK = new Set(["info", "permissions", "openPermission", "openExternal", "setLogin", "retryKeys", "installUpdate"]);
+const ASK = new Set(["info", "permissions", "openPermission", "openExternal", "setLogin", "retryKeys", "installUpdate", "relaunch"]);
 
 if (ours) {
   contextBridge.exposeInMainWorld("passivDesktop", {

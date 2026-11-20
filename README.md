@@ -31,7 +31,7 @@ Set `minimum` in `buddyVersion.ts` to force an update (the buddy opens its windo
 ## First release
 
 1. Put this folder in a GitHub repo (public, so people can download).
-2. `git tag v0.3.2 && git push --tags`. GitHub builds the Mac and Windows installers and attaches them to a Release (about 10 minutes).
+2. `git tag v0.3.3 && git push --tags`. GitHub builds the Mac and Windows installers and attaches them to a Release (about 10 minutes).
 3. In Base44, open `base44/shared/buddyVersion.ts` and paste the three links:
    - `https://github.com/<you>/<repo>/releases/latest/download/Passiv-mac-arm64.dmg`
    - `https://github.com/<you>/<repo>/releases/latest/download/Passiv-mac-x64.dmg`
