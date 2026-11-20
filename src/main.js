@@ -54,14 +54,18 @@ const UI_CSP = "default-src 'self'; style-src 'self'; script-src 'self'; img-src
 protocol.registerSchemesAsPrivileged([{ scheme: UI_SCHEME, privileges: { standard: true, secure: true } }]);
 const uiDir = () => path.join(app.getPath("userData"), "ui");
 const uiMemory = new Map(); // name -> { text, at }
+let loadedRev = null; // fingerprint of the pages this app is showing (from the layer file), so it can tell when Passiv has newer ones
+let pendingRev = null; // set when Passiv has published newer pages than the ones showing
 async function uiFile(name) {
   const hit = uiMemory.get(name);
   if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.text;
   try {
     const res = await net.fetch(`${APP_URL}/functions/buddyFiles?f=${encodeURIComponent(name)}&v=${encodeURIComponent(app.getVersion())}`, { cache: "no-store", signal: AbortSignal.timeout(15000) });
     const text = res.ok ? await res.text() : "";
+    const rev = res.headers.get("x-ui-rev");
     // A real page is never empty or huge. Anything else (an error message, a sign-in page) is not used.
     if (!text || text.length > 200000 || /^\s*\{\s*"error_type"/.test(text)) throw new Error("not a page");
+    if (name === "layer.js" && rev && /^[a-f0-9]{8}$/.test(rev)) loadedRev = rev;
     uiMemory.set(name, { text, at: Date.now() });
     try { fs.mkdirSync(uiDir(), { recursive: true }); fs.writeFileSync(path.join(uiDir(), name), text); } catch { /* a copy is a bonus */ }
     return text;
@@ -220,7 +224,7 @@ function createOverlay(display) {
   win.webContents.on("did-finish-load", () => {
     if (authed && cache.state) win.webContents.send("overlay:state", withOpen(cache.state));
     win.webContents.send("overlay:buddy", buddyPayload());
-    if (update) win.webContents.send("overlay:update", updatePayload());
+    if (updatePayload()) win.webContents.send("overlay:update", updatePayload());
     if (authed) win.webContents.send("overlay:todos", cache.todos);
     win.showInactive();
   });
@@ -232,7 +236,7 @@ function rebuildOverlays() {
   overlays.clear();
   for (const d of screen.getAllDisplays()) createOverlay(d);
 }
-const updatePayload = () => (update ? { latest: update.latest, notes: update.notes } : null);
+const updatePayload = () => (update ? { latest: update.latest, notes: update.notes } : pendingRev ? { refresh: true } : null);
 const toOverlays = (channel, data) => { for (const w of overlays.values()) if (!w.isDestroyed()) w.webContents.send(channel, data); };
 
 // Windows lets other always-on-top windows (and the taskbar) sneak in front now and then, so the layer re-asserts itself.
@@ -372,7 +376,10 @@ async function checkForUpdate() {
     if (!res.ok) return;
     const v = await res.json();
     const mine = app.getVersion();
-    if (!v?.latest || !older(mine, v.latest)) { update = null; buildTrayMenu(); toOverlays("overlay:update", null); return; }
+    // Passiv published newer pages (the layer, the typing box)? Offer a one-click refresh.
+    const ui = typeof v?.ui === "string" && /^[a-f0-9]{8}$/.test(v.ui) ? v.ui : "";
+    pendingRev = ui && loadedRev && ui !== loadedRev ? ui : null;
+    if (!v?.latest || !older(mine, v.latest)) { update = null; buildTrayMenu(); toOverlays("overlay:update", updatePayload()); return; }
     const fresh = !update || update.latest !== v.latest;
     update = { latest: clip(String(v.latest), 20), url: myDownload(v.downloads), sha256: mySum(v.sha256), notes: clip(String(v.notes || ""), 200), required: !!v.minimum && older(mine, v.minimum) };
     buildTrayMenu();
@@ -413,6 +420,14 @@ async function replaceMacApp(dmg, dir) {
   const script = 'while kill -0 "$1" 2>/dev/null; do sleep 0.3; done; rm -rf "$2.old"; mv "$2" "$2.old" || exit 1; if mv "$3" "$2"; then /usr/bin/xattr -dr com.apple.quarantine "$2" 2>/dev/null; rm -rf "$2.old"; else mv "$2.old" "$2"; fi; /usr/bin/open "$2"; rm -rf "$4"';
   spawn("/bin/sh", ["-c", script, "sh", String(process.pid), bundle, path.join(fresh, "Passiv.app"), dir], { detached: true, stdio: "ignore" }).unref();
   return true;
+}
+
+// One click on "Refresh now": load the newest pages from Passiv into the buddy, the typing box and the Passiv window.
+function refreshUi() {
+  uiMemory.clear(); pendingRev = null; loadedRev = null;
+  for (const w of overlays.values()) if (!w.isDestroyed()) w.webContents.reloadIgnoringCache();
+  if (askWin && !askWin.isDestroyed()) askWin.destroy();
+  if (panel && !panel.isDestroyed()) panel.webContents.reloadIgnoringCache();
 }
 
 // One click: download the new installer, check it, and install it. On a Mac it replaces the app and restarts on its own
@@ -612,6 +627,7 @@ ipcMain.on("overlay:command", (e, cmd) => {
   else if (cmd.type === "talk") toggleTalk();
   else if (cmd.type === "ask") openAsk();
   else if (cmd.type === "installUpdate") installUpdate();
+  else if (cmd.type === "refresh") refreshUi();
   else if (cmd.type === "hide") setBuddyOn(false);
   else if (cmd.type === "note" && typeof cmd.id === "string" && /^[\w-]{1,60}$/.test(cmd.id) && typeof cmd.action === "string" && /^[\w-]{1,40}$/.test(cmd.action)) toPanel({ type: "note", id: cmd.id, action: cmd.action });
   else if (cmd.type === "person" && typeof cmd.id === "string" && /^[\w-]{1,60}$/.test(cmd.id)) openSafe(`${APP_URL}/r/${cmd.id}`);
@@ -668,5 +684,5 @@ app.whenReady().then(() => {
   screen.on("display-metrics-changed", later);
   // Is there a newer buddy? Shortly after starting, then every few hours.
   setTimeout(checkForUpdate, 8000);
-  setInterval(checkForUpdate, 4 * 3600e3);
+  setInterval(checkForUpdate, 10 * 60e3); // a small check: new buddy version, or newer pages from Passiv
 });
