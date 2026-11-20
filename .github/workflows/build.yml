@@ -21,12 +21,17 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # The app files sit in the passiv-buddy folder of this repo.
+    defaults:
+      run:
+        working-directory: passiv-buddy
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: passiv-buddy/package-lock.json
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run check
@@ -38,8 +43,8 @@ jobs:
         with:
           name: passiv-buddy-${{ matrix.os }}
           path: |
-            dist/Passiv-mac-*.dmg
-            dist/Passiv-Windows-Setup.exe
+            passiv-buddy/dist/Passiv-mac-*.dmg
+            passiv-buddy/dist/Passiv-Windows-Setup.exe
           if-no-files-found: error
   release:
     if: startsWith(github.ref, 'refs/tags/v')
