@@ -15,6 +15,8 @@
 const fs = require("fs");
 const crypto = require("crypto");
 const os = require("os");
+const { execFile, spawn } = require("child_process");
+const run = (cmd, args) => new Promise((res, rej) => execFile(cmd, args, { timeout: 120000 }, (e, out) => (e ? rej(e) : res(String(out)))));
 const path = require("path");
 const { app, BrowserWindow, screen, ipcMain, Tray, Menu, globalShortcut, systemPreferences, nativeImage, shell, session, Notification, net, protocol } = require("electron");
 
@@ -378,8 +380,36 @@ async function checkForUpdate() {
   } catch { /* offline: try later */ }
 }
 
-// One click: download the new installer and open it. Windows installs and restarts on its own;
-// on a Mac the download opens and they drag Passiv into Applications.
+// A Mac update, done for them: open the verified download, copy the new Passiv out of it, quit, swap it in for the running
+// one and start it again. The files come from our own checksum-verified download, so macOS has nothing to warn about.
+// Returns false (and touches nothing) if Passiv isn't somewhere it is allowed to replace itself; the caller then opens the download as before.
+async function replaceMacApp(dmg, dir) {
+  const bundle = path.resolve(process.execPath, "..", "..", "..");
+  if (!bundle.endsWith(".app")) return false;
+  try { fs.accessSync(path.dirname(bundle), fs.constants.W_OK); fs.accessSync(bundle, fs.constants.W_OK); } catch { return false; }
+  const mount = path.join(dir, "mnt"), fresh = path.join(dir, "new");
+  fs.mkdirSync(mount); fs.mkdirSync(fresh);
+  let mounted = false;
+  try {
+    await run("/usr/bin/hdiutil", ["attach", "-nobrowse", "-noverify", "-readonly", "-noautoopen", "-mountpoint", mount, dmg]);
+    mounted = true;
+    const apps = fs.readdirSync(mount).filter((n) => n.endsWith(".app"));
+    if (apps.length !== 1) throw new Error("unexpected installer contents");
+    await run("/usr/bin/ditto", [path.join(mount, apps[0]), path.join(fresh, "Passiv.app")]);
+  } catch (e) {
+    console.error("[passiv] in-place update not possible:", e && e.message);
+    return false;
+  } finally {
+    if (mounted) await run("/usr/bin/hdiutil", ["detach", "-force", mount]).catch(() => {});
+  }
+  // The swap has to happen after this app has quit, so a small helper waits for it, swaps, and relaunches. If anything fails it puts the old one back.
+  const script = 'while kill -0 "$1" 2>/dev/null; do sleep 0.3; done; rm -rf "$2.old"; mv "$2" "$2.old" || exit 1; if mv "$3" "$2"; then /usr/bin/xattr -dr com.apple.quarantine "$2" 2>/dev/null; rm -rf "$2.old"; else mv "$2.old" "$2"; fi; /usr/bin/open "$2"; rm -rf "$4"';
+  spawn("/bin/sh", ["-c", script, "sh", String(process.pid), bundle, path.join(fresh, "Passiv.app"), dir], { detached: true, stdio: "ignore" }).unref();
+  return true;
+}
+
+// One click: download the new installer, check it, and install it. On a Mac it replaces the app and restarts on its own
+// (if that isn't possible the download opens and they drag Passiv into Applications). Windows installs and restarts on its own.
 let installing = false;
 async function installUpdate() {
   if (installing) return;
@@ -399,6 +429,12 @@ async function installUpdate() {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "passiv-"));
     const file = path.join(dir, IS_MAC ? `Passiv-${update.latest.replace(/[^\w.]/g, "")}.dmg` : `Passiv-Setup-${update.latest.replace(/[^\w.]/g, "")}.exe`);
     fs.writeFileSync(file, buf, { mode: 0o600 });
+    if (IS_MAC && await replaceMacApp(file, dir)) {
+      dir = ""; // the helper cleans it up once the swap is done
+      if (Notification.isSupported()) new Notification({ title: "Updating Passiv", body: "Passiv restarts in a few seconds.", silent: true }).show();
+      setTimeout(() => { quitting = true; app.quit(); }, 600);
+      return;
+    }
     const err = await shell.openPath(file);
     if (err) throw new Error(err);
     if (IS_MAC && Notification.isSupported()) new Notification({ title: "Almost done", body: "Drag Passiv into Applications and choose Replace. Passiv closes now so it can be replaced." }).show();

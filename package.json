@@ -1,7 +1,7 @@
 {
   "name": "passiv-desktop",
   "productName": "Passiv",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "The Passiv desktop buddy: a movable Passiv icon on top of every app, sticky notes for what it says, hold-to-talk from anywhere, and your to-dos on the front of the screen.",
   "main": "src/main.js",
   "author": "Passiv Solutions LLC",
