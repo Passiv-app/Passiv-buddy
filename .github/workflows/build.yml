@@ -1,0 +1,72 @@
+# Builds the desktop buddy for Mac (Apple silicon and Intel) and Windows.
+#
+# Push a tag like v0.2.1 and this makes a GitHub Release with the installers attached, at links that never change:
+#   https://github.com/<you>/<repo>/releases/latest/download/Passiv-mac-arm64.dmg
+#   https://github.com/<you>/<repo>/releases/latest/download/Passiv-mac-x64.dmg
+#   https://github.com/<you>/<repo>/releases/latest/download/Passiv-Windows-Setup.exe
+# Put those three links in public/buddy/version.json in Base44 once. After that, a new buddy goes out with:
+#   1. raise "version" in package.json, commit, tag (git tag v0.2.1 && git push --tags)
+#   2. in Base44, raise "latest" in public/buddy/version.json and publish.
+# The repo needs to be public for people to download from it (or use a separate public repo for releases).
+name: Build Passiv buddy
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run check
+      - run: npm run build
+        env:
+          # Signing comes later (Apple Developer ID, Windows certificate). Until then Mac builds are ad-hoc signed.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: passiv-buddy-${{ matrix.os }}
+          path: |
+            dist/Passiv-mac-*.dmg
+            dist/Passiv-Windows-Setup.exe
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      # The fingerprint (SHA-256) of every installer. Paste these into public/buddy/version.json in Base44:
+      # a buddy only installs an update whose fingerprint matches, so a swapped file is never opened.
+      - name: Fingerprints
+        run: |
+          cd out
+          sha256sum Passiv-* | tee SHA256SUMS.txt
+          {
+            echo "### Paste into public/buddy/version.json"
+            echo '```json'
+            echo '"sha256": {'
+            echo "  \"mac_arm64\": \"$(sha256sum Passiv-mac-arm64.dmg | cut -d' ' -f1)\","
+            echo "  \"mac_x64\": \"$(sha256sum Passiv-mac-x64.dmg | cut -d' ' -f1)\","
+            echo "  \"windows\": \"$(sha256sum Passiv-Windows-Setup.exe | cut -d' ' -f1)\""
+            echo '}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
