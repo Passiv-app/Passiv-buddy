@@ -586,7 +586,7 @@ ipcMain.handle("desktop:invoke", async (e, name, arg) => {
     case "retryKeys": return hookKeys();
     case "installUpdate": installUpdate(); return true;
     // Mac only notices a new Accessibility permission after a restart.
-    case "relaunch": quitting = true; app.relaunch(); app.exit(0); return true;
+    case "relaunch": quitting = true; app.releaseSingleInstanceLock(); app.relaunch(); app.exit(0); return true;
     case "authed": return authed;
     default: return null;
   }
@@ -625,8 +625,9 @@ app.on("web-contents-created", (_e, wc) => {
   wc.on("will-redirect", (ev, url) => { if (!okHost(url)) ev.preventDefault(); });
 });
 
-app.on("second-instance", () => showPanel());
-app.on("activate", () => showPanel());
+// With a Dock icon, macOS can announce "activate" before the app has finished starting; windows can only be made once it is ready.
+app.on("second-instance", () => { if (app.isReady()) showPanel(); });
+app.on("activate", () => { if (app.isReady()) showPanel(); });
 app.on("before-quit", () => { quitting = true; });
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
