@@ -1,5 +1,5 @@
 // What the buddy's layer can do: hear Passiv's state and notes, and say where it can be clicked.
-// The layer is loaded from Passiv (public/buddy/layer.html), so only that exact page gets this.
+// The layer is loaded by this app from Passiv (passiv-ui://buddy/layer.html), so only that exact page gets this.
 const { contextBridge, ipcRenderer } = require("electron");
 
 const arg = process.argv.find((a) => a.startsWith("--passiv-origin="));

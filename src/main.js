@@ -4,18 +4,19 @@
 //  - the buddy: a see-through layer over every screen, always on top (full-screen apps too), that clicks go
 //    straight through. A small icon you can drag anywhere sits on the main screen, and what Passiv has to say lands
 //    beside it as stacked sticky notes (some tidy themselves away). The coach's to-dos sit on the front too.
-//  - hold Control + Option (Mac) or Ctrl + Alt (Windows) in any app to talk; let go to send. Add S to hide or show it.
+//  - hold Control + Option (Mac) or Ctrl + Alt (Windows) in any app to talk; let go to send. Add S to hide or show it, and Q to quit.
 //  - a small Passiv window (ai.passiv.app/buddy) to sign in, set up, and talk or type when there's more to say.
 //
-// Almost everything is loaded from Passiv (Base44): the layer (public/buddy/layer.*), the buddy window (/buddy) and the
-// brain behind it. Publishing in Base44 updates every installed buddy the next time it starts. Only this shell needs a
-// new download, and public/buddy/version.json in Base44 tells every buddy when one is out.
+// Almost everything comes from Passiv (Base44): the layer and the typing box (served by its public buddyFiles function,
+// because the app is private and Base44 won't hand out files from public/ before someone signs in), the buddy window
+// (/buddy) and the brain behind it. Publishing in Base44 updates every installed buddy the next time it starts. Only this
+// shell needs a new download, and base44/shared/buddyVersion.ts in Base44 tells every buddy when one is out.
 
 const fs = require("fs");
 const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
-const { app, BrowserWindow, screen, ipcMain, Tray, Menu, globalShortcut, systemPreferences, nativeImage, shell, session, Notification, net } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, Tray, Menu, globalShortcut, systemPreferences, nativeImage, shell, session, Notification, net, protocol } = require("electron");
 
 // Only ever talks to Passiv over https. The address can be changed for testing only when started with PASSIV_DEV=1.
 const DEV = process.env.PASSIV_DEV === "1";
@@ -32,11 +33,49 @@ const okHost = (u) => { try { const x = new URL(u); return (x.protocol === "http
 // The only things we ever hand to the operating system to open: web pages and mail links. Never files, never other programs.
 const openSafe = (u) => { try { const x = new URL(String(u)); if (x.protocol === "https:" || x.protocol === "mailto:") { shell.openExternal(x.toString()); return true; } } catch { /* not a link */ } return false; };
 // Messages only count when they come from Passiv's own page, in its main frame, not from anything else that got loaded.
-const trusted = (e) => { try { const f = e.senderFrame; return !!f && f === e.sender.mainFrame && new URL(f.url).origin === APP_ORIGIN; } catch { return false; } };
+const trusted = (e, origin = APP_ORIGIN) => { try { const f = e.senderFrame; return !!f && f === e.sender.mainFrame && new URL(f.url).origin === origin; } catch { return false; } };
 const clip = (v, n) => (typeof v === "string" ? v.slice(0, n) : "");
 app.enableSandbox();
 const SIGN_IN = /^\/(login|register|mfa|forgot-password|reset-password|alpha|setup|legal)/;
-const WEB_ARGS = () => [`--passiv-origin=${APP_ORIGIN}`];
+const WEB_ARGS = (origin = APP_ORIGIN) => [`--passiv-origin=${origin}`];
+
+// ---------- the buddy's own pages (the layer over the screen, the typing box) ----------
+// Passiv is private, so its files can't be loaded in a window before anyone has signed in. This app fetches them itself from
+// the public buddyFiles function and hands them to its own windows under a scheme only this app understands, with its own
+// security rules. A copy is kept on this computer so the buddy still starts offline.
+const UI_SCHEME = "passiv-ui";
+const UI_ORIGIN = `${UI_SCHEME}://buddy`;
+const UI_TYPES = { "layer.html": "text/html; charset=utf-8", "layer.css": "text/css; charset=utf-8", "layer.js": "text/javascript; charset=utf-8", "ask.html": "text/html; charset=utf-8", "ask.css": "text/css; charset=utf-8", "ask.js": "text/javascript; charset=utf-8" };
+const UI_CSP = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+protocol.registerSchemesAsPrivileged([{ scheme: UI_SCHEME, privileges: { standard: true, secure: true } }]);
+const uiDir = () => path.join(app.getPath("userData"), "ui");
+const uiMemory = new Map(); // name -> { text, at }
+async function uiFile(name) {
+  const hit = uiMemory.get(name);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.text;
+  try {
+    const res = await net.fetch(`${APP_URL}/functions/buddyFiles?f=${encodeURIComponent(name)}&v=${encodeURIComponent(app.getVersion())}`, { cache: "no-store", signal: AbortSignal.timeout(15000) });
+    const text = res.ok ? await res.text() : "";
+    // A real page is never empty or huge. Anything else (an error message, a sign-in page) is not used.
+    if (!text || text.length > 200000 || /^\s*\{\s*"error_type"/.test(text)) throw new Error("not a page");
+    uiMemory.set(name, { text, at: Date.now() });
+    try { fs.mkdirSync(uiDir(), { recursive: true }); fs.writeFileSync(path.join(uiDir(), name), text); } catch { /* a copy is a bonus */ }
+    return text;
+  } catch {
+    if (hit) return hit.text;
+    try { return fs.readFileSync(path.join(uiDir(), name), "utf8"); } catch { return null; }
+  }
+}
+function serveUi() {
+  protocol.handle(UI_SCHEME, async (req) => {
+    let u; try { u = new URL(req.url); } catch { return new Response("Bad request", { status: 400 }); }
+    const name = u.pathname.replace(/^\//, "");
+    if (u.host !== "buddy" || !Object.prototype.hasOwnProperty.call(UI_TYPES, name)) return new Response("Not found", { status: 404 });
+    const text = await uiFile(name);
+    if (text === null) return new Response("The buddy could not load. Check your internet connection.", { status: 503 });
+    return new Response(text, { headers: { "content-type": UI_TYPES[name], "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": UI_CSP } });
+  });
+}
 
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
@@ -161,15 +200,15 @@ function createOverlay(display) {
       webSecurity: true,
       allowRunningInsecureContent: false,
       navigateOnDragDrop: false,
-      additionalArguments: WEB_ARGS(),
+      additionalArguments: WEB_ARGS(UI_ORIGIN),
       backgroundThrottling: false,
     },
   });
   win.setAlwaysOnTop(true, "screen-saver");
   if (IS_MAC) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   win.setIgnoreMouseEvents(true, { forward: true });
-  // The layer comes from Passiv, so it changes when Passiv is published.
-  const load = () => win.loadURL(`${APP_URL}/buddy/layer.html?primary=${primary ? 1 : 0}&v=${app.getVersion()}`);
+  // The layer comes from Passiv (through the buddyFiles function), so it changes when Passiv is published.
+  const load = () => win.loadURL(`${UI_ORIGIN}/layer.html?primary=${primary ? 1 : 0}&v=${app.getVersion()}`);
   load();
   win.webContents.on("did-fail-load", (_e, code, _d, _u, isMain) => { if (isMain && code !== -3) setTimeout(() => !win.isDestroyed() && load(), 20000); });
   win.webContents.on("will-navigate", (e) => e.preventDefault());
@@ -213,12 +252,12 @@ function createAsk() {
     webPreferences: {
       preload: path.join(__dirname, "preload-ask.js"),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, allowRunningInsecureContent: false, navigateOnDragDrop: false,
-      additionalArguments: WEB_ARGS(),
+      additionalArguments: WEB_ARGS(UI_ORIGIN),
     },
   });
   askWin.setAlwaysOnTop(true, "screen-saver");
   if (IS_MAC) askWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
-  askWin.loadURL(`${APP_URL}/buddy/ask.html?v=${app.getVersion()}`);
+  askWin.loadURL(`${UI_ORIGIN}/ask.html?v=${app.getVersion()}`);
   askWin.webContents.on("will-navigate", (e) => e.preventDefault());
   askWin.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   askWin.on("blur", () => { if (askWin && !askWin.isDestroyed()) askWin.hide(); });
@@ -300,6 +339,8 @@ function startKeys() {
   globalShortcut.register("Control+Alt+Space", () => openAsk());
   globalShortcut.register("Control+Alt+T", () => toggleTalk());
   globalShortcut.register("Control+Alt+P", () => showPanel());
+  // A way out that never depends on finding an icon: Ctrl+Alt+Q quits the buddy completely.
+  globalShortcut.register("Control+Alt+Q", () => { quitting = true; app.quit(); });
   if (!hooked) globalShortcut.register("Control+Alt+S", () => setBuddyOn(!state.buddyOn));
 }
 
@@ -319,7 +360,7 @@ const okDownload = (u) => { try { const x = new URL(u); return x.protocol === "h
 
 async function checkForUpdate() {
   try {
-    const res = await net.fetch(`${APP_URL}/buddy/version.json?t=${Date.now()}`, { cache: "no-store" });
+    const res = await net.fetch(`${APP_URL}/functions/buddyFiles?f=version.json&t=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(15000) });
     if (!res.ok) return;
     const v = await res.json();
     const mine = app.getVersion();
@@ -409,7 +450,7 @@ function createTray() {
   const img = nativeImage.createFromPath(path.join(__dirname, "..", "assets", IS_MAC ? "trayTemplate.png" : "tray.png"));
   if (IS_MAC) img.setTemplateImage(true);
   tray = new Tray(img);
-  tray.setToolTip(`Passiv · type ${KEYS}${IS_MAC ? "Space" : "+Space"} · hold ${KEYS} to talk`);
+  tray.setToolTip(`Passiv · type ${KEYS}${IS_MAC ? "Space" : "+Space"} · hold ${KEYS} to talk · quit ${KEYS}${IS_MAC ? "Q" : "+Q"}`);
   if (!IS_MAC) tray.on("click", () => showPanel());
   buildTrayMenu();
 }
@@ -473,7 +514,7 @@ ipcMain.on("app:onboarded", (e) => {
   hello();
 });
 function hello() {
-  if (Notification.isSupported()) new Notification({ title: "Your Passiv buddy is on", body: `Hold ${KEYS} in any app to talk. It's in your ${IS_MAC ? "menu bar" : "system tray"} too.`, silent: true }).show();
+  if (Notification.isSupported()) new Notification({ title: "Your Passiv buddy is on", body: `Hold ${KEYS} in any app to talk. ${KEYS}${IS_MAC ? "Q" : "+Q"} quits it. It's in your ${IS_MAC ? "menu bar" : "system tray"} too.`, silent: true }).show();
 }
 
 ipcMain.handle("desktop:invoke", async (e, name, arg) => {
@@ -507,8 +548,8 @@ ipcMain.handle("desktop:invoke", async (e, name, arg) => {
 });
 
 // ---------- messages from the layer ----------
-const fromLayer = (e) => { const w = BrowserWindow.fromWebContents(e.sender); return w && authed && trusted(e) && [...overlays.values()].includes(w) ? w : null; };
-const fromAsk = (e) => !!askWin && !askWin.isDestroyed() && e.sender === askWin.webContents && authed && trusted(e);
+const fromLayer = (e) => { const w = BrowserWindow.fromWebContents(e.sender); return w && authed && trusted(e, UI_ORIGIN) && [...overlays.values()].includes(w) ? w : null; };
+const fromAsk = (e) => !!askWin && !askWin.isDestroyed() && e.sender === askWin.webContents && authed && trusted(e, UI_ORIGIN);
 // The typing box sends back what was typed, or asks to close.
 ipcMain.on("ask:submit", (e, text) => {
   if (!fromAsk(e) || typeof text !== "string") return;
@@ -547,9 +588,14 @@ app.on("will-quit", () => {
 app.on("window-all-closed", () => { /* stays running in the menu bar / tray; Quit is in its menu */ });
 
 app.whenReady().then(() => {
+  serveUi();
   loadState();
-  // A menu bar app: no Dock icon.
-  if (IS_MAC && app.dock) app.dock.hide();
+  // On a Mac, stay in the Dock while running so there is always a visible way to see it and quit it (right-click the Dock icon
+  // → Quit). The menu bar icon can hide behind the notch or under other menu bar items.
+  if (IS_MAC && app.dock) app.dock.setMenu(Menu.buildFromTemplate([
+    { label: "Open Passiv", click: () => showPanel() },
+    { label: "Type to Passiv", click: () => openAsk() },
+  ]));
   // The microphone, for Passiv's own pages only.
   session.defaultSession.setPermissionRequestHandler((wc, permission, done, details) => {
     const origin = (() => { try { return new URL(details.requestingUrl || wc.getURL()).origin; } catch { return ""; } })();
