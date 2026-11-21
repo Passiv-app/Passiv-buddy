@@ -248,6 +248,9 @@ function keepOnTop() {
 // ---------- hold to talk, from any app ----------
 let talking = false;
 let hooked = false;
+let keyStatus = "starting"; // plain words about the key listener, shown in the menu so a problem can be read off
+const setKeys = (t) => { if (t !== keyStatus) { keyStatus = t; buildTrayMenu(); } };
+let keysSeen = false; // true once the key listener has really heard a key (proves the Mac permissions took effect)
 const setTalking = (on, phase) => {
   if (!authed) { talking = false; if (on) showPanel(); return; } // no account, no listening
   talking = on; toPanel({ type: "talk", phase });
@@ -299,7 +302,7 @@ function setBuddyOn(on) {
 function hookKeys() {
   if (hooked) return true;
   // Mac needs Accessibility switched on once to hear keys in other apps. The welcome screen walks them through it.
-  if (IS_MAC && !systemPreferences.isTrustedAccessibilityClient(false)) return false;
+  if (IS_MAC && !systemPreferences.isTrustedAccessibilityClient(false)) { setKeys("Accessibility is off for this copy of Passiv"); return false; }
   try {
     const { uIOhook, UiohookKey } = require("uiohook-napi");
     const CTRL = new Set([UiohookKey.Ctrl, UiohookKey.CtrlRight]);
@@ -307,8 +310,11 @@ function hookKeys() {
     const ALT = new Set(IS_WIN ? [UiohookKey.Alt] : [UiohookKey.Alt, UiohookKey.AltRight]);
     const down = new Set();
     let timer = null;
-    const held = () => ({ ctrl: [...down].some((k) => CTRL.has(k)), alt: [...down].some((k) => ALT.has(k)), other: [...down].some((k) => !CTRL.has(k) && !ALT.has(k)) });
+    // Caps Lock (and the Mac globe key) stay "down" while on and must not count as another key being pressed.
+    const IGNORE = new Set([UiohookKey.CapsLock]);
+    const held = () => ({ ctrl: [...down].some((k) => CTRL.has(k)), alt: [...down].some((k) => ALT.has(k)), other: [...down].some((k) => !CTRL.has(k) && !ALT.has(k) && !IGNORE.has(k)) });
     uIOhook.on("keydown", (e) => {
+      if (!keysSeen) { keysSeen = true; setKeys("working"); }
       down.add(e.keycode);
       const h = held();
       if (h.ctrl && h.alt && e.keycode === UiohookKey.S) {
@@ -327,6 +333,8 @@ function hookKeys() {
     });
     uIOhook.on("keyup", (e) => {
       down.delete(e.keycode);
+      // Nothing of ours is held any more: forget any key whose release we missed, so one stuck key can't block holding to talk.
+      if (!held().ctrl && !held().alt) down.clear();
       if (CTRL.has(e.keycode) || ALT.has(e.keycode)) {
         if (timer) { clearTimeout(timer); timer = null; }
         if (talking) setTalking(false, "stop");
@@ -334,8 +342,10 @@ function hookKeys() {
     });
     uIOhook.start();
     hooked = true;
+    setKeys("listening, no key heard yet (Input Monitoring may be off)");
     globalShortcut.unregister("Control+Alt+S");
   } catch (err) {
+    setKeys(`could not start (${String((err && err.message) || err).slice(0, 80)})`);
     console.error("[passiv] key listener unavailable, using the fallback shortcuts", err);
   }
   return hooked;
@@ -471,6 +481,15 @@ async function installUpdate() {
 }
 
 // ---------- menu bar / tray ----------
+// Mac only lets an app hear keys in other apps with Accessibility AND Input Monitoring switched on for it.
+// Each new unsigned build can look "switched on" in System Settings while macOS no longer trusts it, so this first clears the old
+// entries for Passiv, then asks again.
+async function fixHoldToTalk() {
+  if (IS_MAC) for (const svc of ["Accessibility", "ListenEvent"]) await run("/usr/bin/tccutil", ["reset", svc, "app.passiv.desktop"]).catch(() => {});
+  systemPreferences.isTrustedAccessibilityClient(true); // asks for Accessibility again
+  shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
+  if (Notification.isSupported()) new Notification({ title: "Hold to talk", body: "Allow Passiv when macOS asks, and switch it on under Input Monitoring (opened now) and Accessibility. Then choose Quit Passiv and open it again.", silent: true }).show();
+}
 function buildTrayMenu() {
   if (!tray) return;
   const login = app.getLoginItemSettings().openAtLogin;
@@ -479,6 +498,8 @@ function buildTrayMenu() {
     ...(authed ? [] : [{ label: "Sign in to Passiv to use the buddy", click: () => showPanel() }, { type: "separator" }]),
     { label: "Type to Passiv", accelerator: "Control+Alt+Space", enabled: authed, click: () => openAsk() },
     { label: `Talk: hold ${KEYS}, or tap ${IS_MAC ? "⌃⌥T" : "Ctrl+Alt+T"}`, enabled: false },
+    { label: `Keys: ${keyStatus}`, enabled: false },
+    ...(IS_MAC && !keysSeen ? [{ label: "Hold to talk isn't working? Fix it…", click: fixHoldToTalk }] : []),
     { label: "Open chat", accelerator: "Control+Alt+P", click: () => showPanel() },
     { label: "Your to-dos", click: () => showPanel("todos") },
     { label: "Open Passiv in your browser", click: () => openSafe(APP_URL) },
@@ -582,11 +603,16 @@ ipcMain.handle("desktop:invoke", async (e, name, arg) => {
     case "permissions": return {
       microphone: (IS_MAC || process.platform === "win32") ? systemPreferences.getMediaAccessStatus("microphone") : "granted",
       accessibility: IS_MAC ? systemPreferences.isTrustedAccessibilityClient(false) : true,
+      keysHeard: !IS_MAC || keysSeen,
     };
     case "openPermission":
       if (arg === "microphone") {
         if (IS_MAC && systemPreferences.getMediaAccessStatus("microphone") === "not-determined") return systemPreferences.askForMediaAccess("microphone");
         shell.openExternal(IS_MAC ? "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone" : "ms-settings:privacy-microphone");
+        return true;
+      }
+      if (arg === "inputMonitoring" && IS_MAC) {
+        shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
         return true;
       }
       if (arg === "accessibility" && IS_MAC) {
