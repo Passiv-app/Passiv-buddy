@@ -28,7 +28,6 @@ const APP_ORIGIN = new URL(APP_URL).origin;
 const IS_MAC = process.platform === "darwin";
 const IS_WIN = process.platform === "win32";
 if (IS_WIN) app.setAppUserModelId("app.passiv.desktop"); // lets Windows show our notifications under the Passiv name
-const KEYS = IS_MAC ? "⌃⌥" : "Ctrl+Alt";
 // Sign-in can pass through these on its way back to Passiv.
 const AUTH_HOSTS = [/(^|\.)passiv\.app$/, /(^|\.)base44\.(app|com)$/, /^accounts\.google\.com$/, /^login\.microsoftonline\.com$/, /^appleid\.apple\.com$/, ...(DEV ? [/^localhost$/, /^127\.0\.0\.1$/] : [])];
 const okHost = (u) => { try { const x = new URL(u); return (x.protocol === "https:" || (DEV && x.protocol === "http:")) && AUTH_HOSTS.some((r) => r.test(x.hostname)); } catch { return false; } };
@@ -89,9 +88,43 @@ if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
 // ---------- what this computer remembers ----------
 const STATE_FILE = () => path.join(app.getPath("userData"), "buddy-state.json");
-let state = { onboarded: false, buddyOn: true, size: "small" };
-function loadState() { try { state = { ...state, ...JSON.parse(fs.readFileSync(STATE_FILE(), "utf8")) }; } catch { /* first run */ } }
+let state = { onboarded: false, buddyOn: true, size: "small", keys: { ...{ hold: "Control+Alt", type: "Control+Alt+Space", talk: "Control+Alt+T", chat: "Control+Alt+P", todos: "Control+Alt+D", hide: "Control+Alt+S" } } };
+function loadState() { try { state = { ...state, ...JSON.parse(fs.readFileSync(STATE_FILE(), "utf8")) }; } catch { /* first run */ } state.keys = cleanShortcuts(state.keys); }
 function saveState() { try { fs.writeFileSync(STATE_FILE(), JSON.stringify(state)); } catch { /* fine */ } }
+
+// ---------- shortcuts people can change ----------
+// Each action has one key combination. "hold" is the two modifier keys held down to talk (heard by the key listener); the rest are
+// registered with the operating system. Anything arriving from the page is checked here before it is used.
+const SHORTCUT_DEFAULTS = { hold: "Control+Alt", type: "Control+Alt+Space", talk: "Control+Alt+T", chat: "Control+Alt+P", todos: "Control+Alt+D", hide: "Control+Alt+S" };
+const SHORTCUT_LABELS = { hold: "Hold to talk", type: "Open the typing box", talk: "Tap to start and stop talking", chat: "Open the chat", todos: "Open your to-dos", hide: "Hide or show the buddy" };
+const HOLD_CHOICES = ["Control+Alt", "Control+Shift", "Alt+Shift"];
+const MODS = ["Control", "Alt", "Shift", "Command"];
+const QUIT_KEY = "Control+Alt+Q"; // always there, never changeable: the way out
+const normKey = (v) => {
+  if (typeof v !== "string" || v.length > 40) return null;
+  const parts = v.split("+").map((x) => x.trim());
+  const key = parts.pop();
+  if (!/^([A-Z0-9]|F([1-9]|1[0-2])|Space)$/.test(key || "")) return null;
+  if (!parts.length || parts.some((m) => !MODS.includes(m)) || new Set(parts).size !== parts.length) return null;
+  if (parts.length === 1 && parts[0] === "Shift") return null; // Shift+letter is just typing
+  if (!IS_MAC && parts.includes("Command")) return null;
+  return [...MODS.filter((m) => parts.includes(m)), key].join("+"); // fixed order so two spellings of one shortcut match
+};
+const cleanShortcuts = (v) => {
+  const out = { ...SHORTCUT_DEFAULTS };
+  const src = v && typeof v === "object" ? v : {};
+  if (HOLD_CHOICES.includes(src.hold)) out.hold = src.hold;
+  const seen = new Set([QUIT_KEY]);
+  for (const k of ["type", "talk", "chat", "todos", "hide"]) {
+    const n = normKey(src[k]) || SHORTCUT_DEFAULTS[k];
+    out[k] = seen.has(n) ? SHORTCUT_DEFAULTS[k] : n; // a repeat or the quit key falls back to the original
+    seen.add(out[k]);
+  }
+  return out;
+};
+const shortcutText = (accel) => String(accel).split("+").map((x) => (IS_MAC ? { Control: "⌃", Alt: "⌥", Shift: "⇧", Command: "⌘", Space: "Space" }[x] || x : x === "Command" ? "Win" : x)).join(IS_MAC ? "" : "+");
+const sk = () => state.keys;
+let keyFails = {}; // action -> true when the system refused the shortcut (another app or macOS already uses it)
 
 let panel = null;
 let tray = null;
@@ -292,7 +325,7 @@ function setBuddyOn(on) {
   state.buddyOn = on; saveState();
   if (!on && !state.hideTold && Notification.isSupported()) {
     state.hideTold = true; saveState();
-    new Notification({ title: "Buddy hidden", body: `Bring it back from the ${IS_MAC ? "menu bar" : "system tray"} icon, or press ${KEYS}+S.`, silent: true }).show();
+    new Notification({ title: "Buddy hidden", body: `Bring it back from the ${IS_MAC ? "menu bar" : "system tray"} icon, or press ${shortcutText(sk().hide)}.`, silent: true }).show();
   }
   toOverlays("overlay:buddy", buddyPayload());
   toPanel({ type: "buddy", patch: { on } });
@@ -305,25 +338,26 @@ function hookKeys() {
   if (IS_MAC && !systemPreferences.isTrustedAccessibilityClient(false)) { setKeys("Accessibility is off for this copy of Passiv"); return false; }
   try {
     const { uIOhook, UiohookKey } = require("uiohook-napi");
-    const CTRL = new Set([UiohookKey.Ctrl, UiohookKey.CtrlRight]);
     // On Windows, AltGr is Ctrl + right Alt at once (it types characters like @ and é on many keyboards), so only the left Alt counts there.
-    const ALT = new Set(IS_WIN ? [UiohookKey.Alt] : [UiohookKey.Alt, UiohookKey.AltRight]);
+    const GROUPS = {
+      Control: new Set([UiohookKey.Ctrl, UiohookKey.CtrlRight]),
+      Alt: new Set(IS_WIN ? [UiohookKey.Alt] : [UiohookKey.Alt, UiohookKey.AltRight]),
+      Shift: new Set([UiohookKey.Shift, UiohookKey.ShiftRight]),
+    };
+    const ALL_MODS = new Set([...GROUPS.Control, ...GROUPS.Alt, ...GROUPS.Shift]);
     const down = new Set();
     let timer = null;
     // Caps Lock (and the Mac globe key) stay "down" while on and must not count as another key being pressed.
     const IGNORE = new Set([UiohookKey.CapsLock]);
-    const held = () => ({ ctrl: [...down].some((k) => CTRL.has(k)), alt: [...down].some((k) => ALT.has(k)), other: [...down].some((k) => !CTRL.has(k) && !ALT.has(k) && !IGNORE.has(k)) });
+    // Read each time, so a changed hold-to-talk choice takes effect straight away.
+    const want = () => sk().hold.split("+").map((n) => GROUPS[n]).filter(Boolean);
+    const isHoldKey = (k) => want().some((g) => g.has(k));
+    const held = () => ({ all: want().length === 2 && want().every((g) => [...down].some((k) => g.has(k))), other: [...down].some((k) => !isHoldKey(k) && !IGNORE.has(k)), any: [...down].some(isHoldKey) });
     uIOhook.on("keydown", (e) => {
       if (!keysSeen) { keysSeen = true; setKeys("working"); }
       down.add(e.keycode);
       const h = held();
-      if (h.ctrl && h.alt && e.keycode === UiohookKey.S) {
-        clearTimeout(timer); timer = null;
-        if (talking) setTalking(false, "cancel");
-        setBuddyOn(!state.buddyOn);
-        return;
-      }
-      if (h.ctrl && h.alt && !h.other) {
+      if (h.all && !h.other) {
         if (!timer && !talking) timer = setTimeout(() => { timer = null; setTalking(true, "start"); }, 260);
         return;
       }
@@ -334,8 +368,8 @@ function hookKeys() {
     uIOhook.on("keyup", (e) => {
       down.delete(e.keycode);
       // Nothing of ours is held any more: forget any key whose release we missed, so one stuck key can't block holding to talk.
-      if (!held().ctrl && !held().alt) down.clear();
-      if (CTRL.has(e.keycode) || ALT.has(e.keycode)) {
+      if (!held().any) down.clear();
+      if (isHoldKey(e.keycode)) {
         if (timer) { clearTimeout(timer); timer = null; }
         if (talking) setTalking(false, "stop");
       }
@@ -343,7 +377,6 @@ function hookKeys() {
     uIOhook.start();
     hooked = true;
     setKeys("listening, no key heard yet (Input Monitoring may be off)");
-    globalShortcut.unregister("Control+Alt+S");
   } catch (err) {
     setKeys(`could not start (${String((err && err.message) || err).slice(0, 80)})`);
     console.error("[passiv] key listener unavailable, using the fallback shortcuts", err);
@@ -355,15 +388,24 @@ function startKeys() {
   hookKeys();
   // Mac: the moment Accessibility is switched on, start hearing the held keys (no restart needed).
   const retry = setInterval(() => { if (hooked) clearInterval(retry); else hookKeys(); }, 3000);
-  // Always there, and they work before Mac's Accessibility switch too:
-  //   Control+Alt+Space  the typing box, in the middle of the screen
-  //   Control+Alt+T      tap once to talk, tap again to send (holding Control+Alt works too)
-  globalShortcut.register("Control+Alt+Space", () => openAsk());
-  globalShortcut.register("Control+Alt+T", () => toggleTalk());
-  globalShortcut.register("Control+Alt+P", () => showPanel());
-  // A way out that never depends on finding an icon: Ctrl+Alt+Q quits the buddy completely.
-  globalShortcut.register("Control+Alt+Q", () => { quitting = true; app.quit(); });
-  if (!hooked) globalShortcut.register("Control+Alt+S", () => setBuddyOn(!state.buddyOn));
+  registerShortcuts();
+}
+
+// The shortcuts the operating system hands us (they work before Mac's Accessibility switch too). Redone whenever they change.
+// If the system refuses one, it is named in the menu so the problem can be read off and the key changed.
+function registerShortcuts() {
+  globalShortcut.unregisterAll();
+  keyFails = {};
+  const k = sk();
+  const ACTIONS = { type: () => openAsk(), talk: () => toggleTalk(), chat: () => showPanel(), todos: () => showPanel("todos"), hide: () => setBuddyOn(!state.buddyOn) };
+  for (const name of Object.keys(ACTIONS)) {
+    let ok = false;
+    try { ok = globalShortcut.register(k[name], ACTIONS[name]); } catch { ok = false; }
+    if (!ok) keyFails[name] = true;
+  }
+  // A way out that never depends on finding an icon, and never changes: Ctrl+Alt+Q quits the buddy completely.
+  try { globalShortcut.register(QUIT_KEY, () => { quitting = true; app.quit(); }); } catch { /* nothing more to do */ }
+  buildTrayMenu();
 }
 
 // ---------- new versions of this app, announced from Passiv ----------
@@ -496,17 +538,19 @@ function buildTrayMenu() {
   tray.setContextMenu(Menu.buildFromTemplate([
     ...(update ? [{ label: `Update the buddy (${update.latest})`, click: installUpdate }, { type: "separator" }] : []),
     ...(authed ? [] : [{ label: "Sign in to Passiv to use the buddy", click: () => showPanel() }, { type: "separator" }]),
-    { label: "Type to Passiv", accelerator: "Control+Alt+Space", enabled: authed, click: () => openAsk() },
-    { label: `Talk: hold ${KEYS}, or tap ${IS_MAC ? "⌃⌥T" : "Ctrl+Alt+T"}`, enabled: false },
+    { label: "Type to Passiv", accelerator: sk().type, enabled: authed, click: () => openAsk() },
+    { label: `Talk: hold ${shortcutText(sk().hold)}, or tap ${shortcutText(sk().talk)}`, enabled: false },
     { label: `Keys: ${keyStatus}`, enabled: false },
+    ...(Object.keys(keyFails).length ? [{ label: `Can't use ${Object.keys(keyFails).map((n) => shortcutText(sk()[n])).join(", ")}: another app or ${IS_MAC ? "macOS" : "Windows"} has it. Change it in the buddy's Shortcuts.`, enabled: false }] : []),
     ...(IS_MAC && !keysSeen ? [{ label: "Hold to talk isn't working? Fix it…", click: fixHoldToTalk }] : []),
-    { label: "Open chat", accelerator: "Control+Alt+P", click: () => showPanel() },
-    { label: "Your to-dos", click: () => showPanel("todos") },
+    { label: "Open chat", accelerator: sk().chat, click: () => showPanel() },
+    { label: "Your to-dos", accelerator: sk().todos, click: () => showPanel("todos") },
+    { label: "Shortcuts and tips…", click: () => showPanel("shortcuts") },
     { label: "Open Passiv in your browser", click: () => openSafe(APP_URL) },
     { type: "separator" },
     { label: "Clear all notes", click: () => toOverlays("overlay:notes", { op: "clear" }) },
     { label: "Put the icon back at the side", click: () => toOverlays("overlay:reset", true) },
-    { label: "Show the buddy", type: "checkbox", checked: state.buddyOn, accelerator: "Control+Alt+S", click: () => setBuddyOn(!state.buddyOn) },
+    { label: "Show the buddy", type: "checkbox", checked: state.buddyOn, accelerator: sk().hide, click: () => setBuddyOn(!state.buddyOn) },
     { label: "Buddy size", submenu: [["cursor", "Tiny"], ["small", "Small"], ["default", "Large"]].map(([s, name]) => ({ label: name, type: "radio", checked: state.size === s, click: () => { state.size = s; saveState(); toOverlays("overlay:buddy", buddyPayload()); toPanel({ type: "buddy", patch: { size: s } }); buildTrayMenu(); } })) },
     { label: "Start when my computer starts", type: "checkbox", checked: login, click: () => { setLogin(!login); buildTrayMenu(); } },
     { label: "Sign out and clear this computer", enabled: authed, click: signOut },
@@ -529,7 +573,7 @@ function createTray() {
   const img = nativeImage.createFromPath(path.join(__dirname, "..", "assets", IS_MAC ? "trayTemplate.png" : "tray.png"));
   if (IS_MAC) img.setTemplateImage(true);
   tray = new Tray(img);
-  tray.setToolTip(`Passiv · type ${KEYS}${IS_MAC ? "Space" : "+Space"} · hold ${KEYS} to talk · quit ${KEYS}${IS_MAC ? "Q" : "+Q"}`);
+  tray.setToolTip(`Passiv · type ${shortcutText(sk().type)} · hold ${shortcutText(sk().hold)} to talk · quit ${shortcutText(QUIT_KEY)}`);
   if (!IS_MAC) tray.on("click", () => showPanel());
   buildTrayMenu();
 }
@@ -593,7 +637,7 @@ ipcMain.on("app:onboarded", (e) => {
   hello();
 });
 function hello() {
-  if (Notification.isSupported()) new Notification({ title: "Your Passiv buddy is on", body: `Hold ${KEYS} in any app to talk. ${KEYS}${IS_MAC ? "Q" : "+Q"} quits it. It's in your ${IS_MAC ? "menu bar" : "system tray"} too.`, silent: true }).show();
+  if (Notification.isSupported()) new Notification({ title: "Your Passiv buddy is on", body: `Hold ${shortcutText(sk().hold)} in any app to talk. ${shortcutText(QUIT_KEY)} quits it. It's in your ${IS_MAC ? "menu bar" : "system tray"} too.`, silent: true }).show();
 }
 
 ipcMain.handle("desktop:invoke", async (e, name, arg) => {
@@ -625,6 +669,13 @@ ipcMain.handle("desktop:invoke", async (e, name, arg) => {
       return typeof arg === "string" && openSafe(arg) && /^https:/.test(arg);
     case "setLogin": setLogin(!!arg); buildTrayMenu(); return true;
     case "retryKeys": return hookKeys();
+    case "getShortcuts": return { keys: sk(), defaults: SHORTCUT_DEFAULTS, labels: SHORTCUT_LABELS, holdChoices: HOLD_CHOICES, failed: Object.keys(keyFails), quit: QUIT_KEY, mac: IS_MAC };
+    case "setShortcuts": {
+      // Only what passes the check is kept; anything else falls back to the original for that action.
+      state.keys = cleanShortcuts(arg); saveState(); registerShortcuts();
+      return { keys: sk(), failed: Object.keys(keyFails) };
+    }
+    case "resetShortcuts": state.keys = cleanShortcuts(null); saveState(); registerShortcuts(); return { keys: sk(), failed: Object.keys(keyFails) };
     case "installUpdate": installUpdate(); return true;
     // Mac only notices a new Accessibility permission after a restart.
     case "relaunch": quitting = true; app.releaseSingleInstanceLock(); app.relaunch(); app.exit(0); return true;
