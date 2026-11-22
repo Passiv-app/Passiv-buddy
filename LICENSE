@@ -1,0 +1,63 @@
+PASSIV SOURCE-AVAILABLE LICENSE (VIEW ONLY), VERSION 1.0
+
+Copyright (c) 2026 Passiv Solutions LLC, 3115 Tall Grass Drive, Naperville, Illinois, USA. All rights reserved.
+
+This repository (the "Software") contains the source code of the Passiv desktop buddy. It is published so that people who use Passiv can see what the desktop app does on their computer. It is not open source software. Passiv Solutions LLC ("Passiv") keeps all rights in it that this license does not expressly give.
+
+1. WHAT YOU MAY DO
+
+You may, free of charge:
+
+(a) read, browse and study the Software, including to check what the Passiv desktop app does and how it protects the computer it runs on;
+
+(b) build the Software on your own computer and run it, only to check that it matches the installers Passiv publishes, or to use it with your own Passiv account while Passiv offers the Passiv service to you;
+
+(c) report a security problem or a bug to security@passiv.app or contact@passiv.app, and quote short parts of the Software in that report; and
+
+(d) do anything that the law gives you the right to do despite this license, such as fair use or the right to look at how software works where the law protects it.
+
+2. WHAT YOU MAY NOT DO
+
+Without Passiv's prior written permission, you may not:
+
+(a) copy, modify, merge, translate or create derivative works of the Software, except for private changes made under 1(b) that you do not share;
+
+(b) publish, distribute, sublicense, sell, rent, lend or host the Software or any build of it, in source or compiled form, other than as GitHub's terms let you view and fork a public repository on GitHub itself;
+
+(c) use the Software, or anything learned from it, to make or help make a product or service that competes with Passiv;
+
+(d) use the Passiv name, logo or guide character, or make a build that looks like it comes from Passiv;
+
+(e) remove or change this license or any copyright notice;
+
+(f) use the Software to access the Passiv service in a way the Passiv Terms of Service do not allow, or to get around a limit, a sign-in step, a permission or a security measure of the Passiv service; or
+
+(g) test the security of the Passiv service, as opposed to the Software on your own computer, without Passiv's written permission.
+
+3. THE PASSIV SERVICE IS NOT INCLUDED
+
+The Software is a shell. The buddy's look, chat and behavior are loaded from ai.passiv.app, and your use of the Passiv service is covered by the Passiv Terms of Service and Privacy Policy, not by this license. Nothing here gives you any right to the Passiv service or to any code, design or data that Passiv does not publish in this repository.
+
+4. THIRD-PARTY SOFTWARE
+
+The Software uses open source components, such as Electron and uiohook-napi, that are licensed to you by their own owners under their own licenses. This license does not change those licenses, and they apply to those components alone. The Passiv installers include the notices those licenses require.
+
+5. FEEDBACK
+
+If you send Passiv a suggestion or a fix, you give Passiv the right to use it for any purpose, without payment or credit to you, and you confirm that you are free to give it.
+
+6. NO WARRANTY
+
+TO THE FULLEST EXTENT PERMITTED BY LAW, THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. THE SOFTWARE IS EARLY SOFTWARE AND MAY CONTAIN BUGS. SEEING THE SOURCE CODE IS NOT A PROMISE THAT IT IS SECURE OR THAT THE INSTALLERS PASSIV PUBLISHES ARE BUILT FROM IT EXACTLY.
+
+7. LIMIT OF LIABILITY
+
+TO THE FULLEST EXTENT PERMITTED BY LAW, PASSIV WILL NOT BE LIABLE TO YOU FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, OR FOR LOST PROFITS, DATA OR GOODWILL, ARISING FROM THE SOFTWARE OR THIS LICENSE, AND PASSIV'S TOTAL LIABILITY FOR ALL CLAIMS RELATING TO THE SOFTWARE WILL NOT EXCEED ONE HUNDRED U.S. DOLLARS (US $100). This section does not limit liability that cannot be limited by law.
+
+8. ENDING THIS LICENSE
+
+This license ends for you automatically if you break it. Passiv may also end it for anyone by changing this file, with effect for later copies and builds. When it ends, stop using the Software and delete your copies and builds, except where section 1(d) applies. Sections 2, 3, 4, 5, 6, 7, 8 and 9 survive.
+
+9. GENERAL
+
+This license is governed by the laws of the State of Illinois and applicable U.S. federal law, without regard to conflict of law rules. If you use the Passiv service, disputes about this license are resolved as Section 20 of the Passiv Terms of Service provides. Otherwise, the state and federal courts in DuPage County, Illinois have exclusive jurisdiction, except that Passiv may seek an injunction in any court to stop a breach of section 2. If a part of this license cannot be enforced, the rest stays in force. Passiv's failure to enforce a part of it is not a waiver. Contact for permission and questions: legal@passiv.app.
